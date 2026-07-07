@@ -1,50 +1,74 @@
 <span align="center">
 
-# Hubitat Meross
+# Hubitat Meross Garage Door Opener
 
-**[BETA]** Unofficial Hubitat Drivers for Meross Smart Devices
+Unofficial Hubitat app and driver for Meross Smart WiFi Garage Door Openers
 
 </span>
 
-## Currently Supports
+## Supported Devices
 
-- MSS120 - Smart WiFi Plug (2 Channel)
-- MSS620 - Smart WiFi Indoor/Outdoor Plug (2 Channel)
-- MSS110 - Smart Plug Mini
-- MSG200 - Smart WiFi Garage Door Opener
-- MDP100 - Smart WiFi Indoor/Outdoor Dimmer Plug
+- MSG100 - Smart WiFi Garage Door Opener (single door)
+- MSG200 - Smart WiFi Garage Door Opener (up to 3 doors)
 
-## Authorization & Configuration
+> **Note:** This fork focuses exclusively on the garage door opener. The smart
+> plug and dimmer drivers from the upstream repository have been removed — if
+> you need those, see [ithinkdancan/hubitat-meross](https://github.com/ithinkdancan/hubitat-meross).
 
-1. If you're setting this plug up fresh, make sure you go through the
-   typical Meross app for initial setup.
+## Installation
 
-2. You will also have to obtain some information that the Meross mobile
-   app uses in its HTTP request headers. See [How To Get Credentials](https://github.com/donavanbecker/homebridge-meross/wiki/Getting-Credentials) for more details.
+1. Set up your garage door opener in the Meross mobile app first, and give it a
+   static IP address (or DHCP reservation) on your network.
 
-## Generating a key for MSG200 - Smart WiFi Garage Door Opener
+2. In Hubitat, go to **Drivers Code** → **New Driver** → **Import**, and use:
 
-Included in the repo is a python scripts for generating keys for the latest garage door firmware taken from [meross-api](https://github.com/bapirex/meross-api/blob/master/login.py). Run the script with python and copy the values into your hubitat config
+   ```
+   https://raw.githubusercontent.com/jlong4096/hubitat-meross/main/drivers/meross-smart-wifi-garage-door-opener.groovy
+   ```
 
-```
-python3 ./login.py
-```
+3. Go to **Apps Code** → **New App** → **Import**, and use:
 
-If you are missing modules you can install them with pip:
+   ```
+   https://raw.githubusercontent.com/jlong4096/hubitat-meross/main/apps/meross_app.groovy
+   ```
 
-```sh
-python3 -m pip install requests
-```
+4. Go to **Apps** → **Add User App** → **Meross Garage Door Manager**.
 
-## Generating a key using Chrome
+## Adding Garage Doors
 
-If you're not familiar with python you can also generate a key using chrome or any other modern browser using the [included JS script](./login.js).
+Open the **Meross Garage Door Manager** app and choose **Add New Garage Doors**.
+You will need:
 
-1. Go to https://iot.meross.com/v1/Auth/login in your browser
-1. Right click on the page, click inspect and locate the console in Chrome Dev Tools
-1. Paste the script into the console
-1. Update USERNAME and PASSWORD strings in the last line. Hit enter.
+- Your Meross account email and password (used once to fetch your account key
+  and device list, then cleared from the app's settings)
+- The local IP address of your garage door opener
+- Your Meross API region domain (`iotx-us.meross.com`, `iotx-eu.meross.com`, or
+  `iotx-ap.meross.com`)
 
-## Prior Art
+The app logs in to the Meross cloud, lets you pick which doors to add, and
+creates a child device per door with the IP, channel, and account key already
+configured. All door control afterward is local (LAN) — the cloud is only used
+during setup.
 
-Based off [homebridge-meross](https://github.com/donavanbecker/homebridge-meross)
+## Device Settings
+
+- **Garage Open/Close time**: the delay (in seconds) before the driver polls
+  the opener to confirm the door's state after an open/close command. Set it a
+  couple of seconds longer than your door's full travel time.
+- The driver polls the opener every minute to keep the door state in sync with
+  changes made outside Hubitat (wall button, Meross app, etc.).
+
+## Credits
+
+This is a fork of community work by several authors, maintained by
+[James Long](https://github.com/jlong4096):
+
+- [ithinkdancan/hubitat-meross](https://github.com/ithinkdancan/hubitat-meross) —
+  original drivers by Daniel Tijerina, with contributions from Todd Pike
+- Meross Garage Door Manager app originally by Art Ardolino (ajardolino3)
+- Based on prior art from [homebridge-meross](https://github.com/donavanbecker/homebridge-meross)
+  and [meross-api](https://github.com/bapirex/meross-api)
+
+## License
+
+[Apache 2.0](./LICENSE)

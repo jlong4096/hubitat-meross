@@ -1,19 +1,27 @@
+/**
+ * Meross Garage Door Manager (Hubitat App)
+ *
+ * Maintained by James Long
+ * https://github.com/jlong4096/hubitat-meross
+ *
+ * Originally written by Art Ardolino (ajardolino3).
+ */
+
 import groovy.json.*
-import java.net.URLEncoder
 import java.security.MessageDigest
 
-def appVersion() { return "0.1.0" }
+def appVersion() { return "0.2.0" }
 
 definition(
 	name: "Meross Garage Door Manager",
-	namespace: "ajardolino3",
-	author: "Art Ardolino",
+	namespace: "jlong4096",
+	author: "James Long",
 	description: "Manages the addition and removal of Meross Garage Door Devices",
-	category: "Bluetooth",
+	category: "Convenience",
 	iconUrl: "",
 	iconX2Url: "",
 	singleInstance: true,
-    importUrl: ""
+    importUrl: "https://raw.githubusercontent.com/jlong4096/hubitat-meross/main/apps/meross_app.groovy"
 )
 
 preferences() {
@@ -27,8 +35,8 @@ preferences() {
 
 def mainPage() {
     return dynamicPage(name: "mainPage", title: "Meross Garage Door Manager", uninstall: true, install: true) {
-        section(){ 
-            paragraph("The Meross Garage Door Manager assists with the configration of Meross Garage Door Opener devices.")
+        section(){
+            paragraph("The Meross Garage Door Manager assists with the configuration of Meross Garage Door Opener devices.")
 			href "addGarageDoorStep1", title: "<b>Add New Garage Doors</b>", description: "Adds new garage door devices."
 			href "listGarageDoorPage", title: "<b>List Garage Doors</b>", description: "Lists added garage door devices."
 			input "debugLog", "bool", title: "Enable debug logging", submitOnChange: true, defaultValue: false
@@ -51,14 +59,6 @@ def listGarageDoorPage() {
 }
 
 def addGarageDoorStep1() {
-	def newBeacons = [:]
-	state.beacons.each { beacon ->
-		def isChild = getChildDevice(beacon.value.dni)
-		if (!isChild && beacon.value.present) {
-            newBeacons["${beacon.value.dni}"] = "${beacon.value.type}: ${beacon.value.dni}"
-		}
-	}
-    
     return dynamicPage(name: "addGarageDoorStep1", title: "Add New Garage Doors (Step 1)", install: false, nextPage: addGarageDoorStep2) {
         section(){
             input "merossUsername", "string", required: true, title: "Meross email address"
@@ -70,117 +70,110 @@ def addGarageDoorStep1() {
 }
 
 def addGarageDoorStep2() {
-    def response = loginMeross(merossUsername,merossPassword,merossDomain)
-    if(response.code == 200) {
-        state.data = getMerossData(response.token,merossDomain)
-        state.merossKey = response.key
-        def devices = [:]
-        state.data.each{ device ->
-            devices["${device.uuid}"] = device.devName
-        }
-        return dynamicPage(name: "addGarageDoorStep2", title: "Add New Garage Doors (Step 2)", install: false, nextPage: addGarageDoorStep3) {
+    def response = loginMeross(merossUsername, merossPassword, merossDomain)
+
+    if (response.code != 200) {
+        return dynamicPage(name: "addGarageDoorStep2", title: "Login Failed", install: false, nextPage: mainPage) {
             section(){
-    			input ("selectedDevice", "enum",
-				   required: true,
-				   multiple: false,
-				   title: "Select a device to add (${devices.size() ?: 0} devices detected)",
-				   description: "Use the dropdown to select a device.",
-                   options: devices)
+                paragraph(response.error ? response.error.toString() : "Login failed. Please check your credentials and API domain.")
             }
         }
     }
-    else {
-        return dynamicPage(name: "addGarageDoorStep2", title: "Login Failed", install: false, nextPage: mainPage) {
-        section(){
-            paragraph response.error
+
+    def data = getMerossData(response.token, merossDomain)
+
+    // getMerossData returns a List of devices on success, or an error Map on failure.
+    if (!(data instanceof List)) {
+        return dynamicPage(name: "addGarageDoorStep2", title: "Unable to Load Devices", install: false, nextPage: mainPage) {
+            section(){
+                paragraph("Login succeeded, but the device list could not be retrieved.")
+                paragraph(data?.error ? data.error.toString() : "Unknown error contacting the Meross API.")
             }
+        }
+    }
+
+    state.data = data
+    state.merossKey = response.key
+
+    def devices = [:]
+    state.data.each{ device ->
+        devices["${device.uuid}"] = device.devName
+    }
+
+    return dynamicPage(name: "addGarageDoorStep2", title: "Add New Garage Doors (Step 2)", install: false, nextPage: addGarageDoorStep3) {
+        section(){
+            input ("selectedDevice", "enum",
+               required: true,
+               multiple: false,
+               title: "Select a device to add (${devices.size() ?: 0} devices detected)",
+               description: "Use the dropdown to select a device.",
+               options: devices)
         }
     }
 }
 
 def addGarageDoorStep3() {
-  def doors = [:]
-  state.data.each { device ->
-    if(device.uuid == selectedDevice) {
-      if(device.deviceType == "msg200") {
-        for(i=1; i<device.channels.size(); i++){
-          def dni = selectedDevice + ":${i}"
-          def isChild = getChildDevice(dni)
-          if(!isChild) {
-            doors["${i}"] = device.channels[i].devName
-          }
+    def doors = [:]
+    def device = state.data?.find { it.uuid == selectedDevice }
+
+    if (device) {
+        // Offer only doors that have not already been added as child devices.
+        getDoorsForDevice(device).each { idx, name ->
+            def dni = "${selectedDevice}:${idx}"
+            if (!getChildDevice(dni)) {
+                doors[idx] = name
+            }
         }
-      }
-      else if (device.deviceType == "msg100") {
-        def dni = selectedDevice + '1'
-        def isChild = getChildDevice(dni)
-        if(!isChild) {
-          doors['1'] = device.devName
+        logDebug("Found device: ${device.devName} (${device.deviceType})")
+    }
+
+    return dynamicPage(name: "addGarageDoorStep3", title: "Add New Garage Doors (Step 3)", install: false, nextPage: addGarageDoorStep4) {
+        section() {
+            input ("selectedDoors", "enum",
+                    required: true,
+                    multiple: true,
+                    title: "Select one or more garage doors to add (${doors.size() ?: 0} new doors detected)",
+                    description: "Use the dropdown to select the door(s).",
+                    options: doors)
         }
-      }
-      else {
-        logDebug("Unsupported device type:" + device.deviceType) 
-      }
     }
-      log.info("device: " + device)
-  }
-  return dynamicPage(name: "addGarageDoorStep3", title: "Add New Garage Doors (Step 3)", install: false, nextPage: addGarageDoorStep4) {
-    section() {
-      input ("selectedDoors", "enum",
-              required: true,
-              multiple: true,
-              title: "Select one or more garage doors to add (${doors.size() ?: 0} new doors detected)",
-              description: "Use the dropdown to select the door(s).",
-              options: doors)
-    }
-  }
 }
 
 def addGarageDoorStep4() {
-    
-    def doors = [:]
-    state.data.each { device ->
-        if(device.uuid == selectedDevice) {
-            for(i=1; i<device.channels.size(); i++){
-                doors["${i}"] = device.channels[i]
-            }
-        }
-    }
-    
-    def status = []
+    def device = state.data?.find { it.uuid == selectedDevice }
+    def doors = device ? getDoorsForDevice(device) : [:]
+
     def message = ""
-    selectedDoors.each{ door_index -> 
-        def door = doors[door_index]
-        logDebug("index: " + door_index + ", door:" + door)
-        def dni = selectedDevice + ":" + door_index
-        def isChild = getChildDevice(dni)
-        def success = false
-        def err = ""
-        if (!isChild) {
-            try {
-                isChild = addChildDevice("ithinkdancan", "Meross Smart WiFi Garage Door Opener", dni, ["label": door.devName])
-                isChild.updateSetting("deviceIp", merossIP)
-                isChild.updateSetting("channel", Integer.parseInt(door_index))
-                isChild.updateSetting("uuid", selectedDevice)
-                isChild.updateSetting("key", state.merossKey)
-                isChild.updateSetting("messageId", "N/A")
-                isChild.updateSetting("sign", "N/A")
-                isChild.updateSetting("timestamp", 0)
-                success = true
-            }
-            catch(exception) {
-                err = exception
-            }
+    selectedDoors?.each{ door_index ->
+        def doorName = doors[door_index]
+        def dni = "${selectedDevice}:${door_index}"
+        if (getChildDevice(dni)) {
+            message += "Door already exists (" + doorName + ").<br/>"
+            return
         }
-        if(success) {
-            message += "New door added successfully (" + door.devName + ").<br/>"
-        } else {
-            message += "Unable to add door: " + err + "<br/>";
+        try {
+            def child = addChildDevice("jlong4096", "Meross Smart WiFi Garage Door Opener", dni, ["label": doorName])
+            child.updateSetting("deviceIp", merossIP)
+            child.updateSetting("channel", Integer.parseInt(door_index))
+            child.updateSetting("uuid", selectedDevice)
+            child.updateSetting("key", state.merossKey)
+            child.updateSetting("messageId", "N/A")
+            child.updateSetting("sign", "N/A")
+            child.updateSetting("timestamp", 0)
+            message += "New door added successfully (" + doorName + ").<br/>"
+        }
+        catch(exception) {
+            message += "Unable to add door: " + exception + "<br/>"
         }
     }
+
+    // Clean up transient/sensitive values now that setup is complete.
 	app?.removeSetting("selectedDevice")
 	app?.removeSetting("selectedDoors")
-    
+    app?.removeSetting("merossPassword")
+    state.remove("merossKey")
+    state.remove("data")
+
 	return dynamicPage(name:"addGarageDoorStep4",
 					   title: "Add Garage Door Status",
 					   nextPage: mainPage,
@@ -189,6 +182,26 @@ def addGarageDoorStep4() {
             paragraph message
 		}
 	}
+}
+
+/**
+ * Returns a map of [channelIndex(String) : doorName] for a device.
+ *   - MSG200 (multi-door): channel 0 is the aggregate/master; doors are 1..n.
+ *   - MSG100 (single-door): the door operates on channel 0.
+ * Both step 3 (options) and step 4 (add) use this so they cannot disagree.
+ */
+def getDoorsForDevice(device) {
+    def doors = [:]
+    if (device?.deviceType == "msg200") {
+        for (int i = 1; i < device.channels.size(); i++) {
+            doors["${i}"] = device.channels[i]?.devName ?: "Door ${i}"
+        }
+    } else if (device?.deviceType == "msg100") {
+        doors["0"] = device.channels?.getAt(0)?.devName ?: device.devName
+    } else {
+        logDebug("Unsupported device type: " + device?.deviceType)
+    }
+    return doors
 }
 
 def installed() {
@@ -203,18 +216,17 @@ def uninstalled() {
     // called when app is uninstalled
 }
 
-def generator(alphabet,n) {
+def generator(alphabet, n) {
   return new Random().with {
     (1..n).collect { alphabet[ nextInt( alphabet.length() ) ] }.join()
   }
 }
 
 def getMerossData(token, domain) {
-    def nonce = generator( (('A'..'Z')+('0'..'9')).join(), 16 )    
+    def nonce = generator( (('A'..'Z')+('0'..'9')).join(), 16 )
     def unix_time = (Integer)Math.floor(new Date().getTime() / 1000);
 
-    def param = "e30=";
-    def encoded_param = param;
+    def encoded_param = "e30=";   // base64 of "{}" -> empty params for devList
 
     def concat_sign = ["23x17ahWarFH6w29", unix_time, nonce, encoded_param].join("")
     MessageDigest digest = MessageDigest.getInstance('MD5')
@@ -226,8 +238,7 @@ def getMerossData(token, domain) {
     data.sign = sign
     data.timestamp = unix_time
     data.nonce = nonce
-    def json = JsonOutput.toJson(data)
-    
+
     def commandParams = [
 		uri: "https://${domain}/v1/Device/devList",
 		contentType: "application/json",
@@ -239,24 +250,21 @@ def getMerossData(token, domain) {
 	try {
 		httpPostJson(commandParams) {resp ->
             if (resp.status == 200) {
-                logDebug("meross data: " + resp.data)
                 respData = resp.data["data"]
-                logDebug("meross data: " + respData)
-                logDebug("meross data: " + respData[0]["uuid"])
+                logDebug("meross devList returned ${respData?.size() ?: 0} device(s)")
 			} else {
 				respData = [code: resp.status, error: "HTTP Protocol Error"]
 			}
 		}
 	} catch (e) {
-		def msg = "Error = ${e}\n\n"
 		respData = [code: 9999, error: e]
 	}
-    
+
     return respData
 }
 
 def loginMeross(email, password, domain) {
-    def nonce = generator( (('A'..'Z')+('0'..'9')).join(), 16 )    
+    def nonce = generator( (('A'..'Z')+('0'..'9')).join(), 16 )
     def unix_time = (Integer)Math.floor(new Date().getTime() / 1000);
 
     def param = [:]
@@ -269,9 +277,9 @@ def loginMeross(email, password, domain) {
     MessageDigest digest = MessageDigest.getInstance('MD5')
     digest.update(concat_sign.bytes, 0, concat_sign.length())
     def sign = new BigInteger(1, digest.digest()).toString(16)
-  
+
     def formBody = "params=${encoded_param}&sign=${sign}&timestamp=${unix_time}&nonce=${nonce}"
-      
+
 	def commandParams = [
 		uri: "https://${domain}/v1/Auth/signIn",
 		contentType: 'application/x-www-form-urlencoded',
@@ -281,26 +289,23 @@ def loginMeross(email, password, domain) {
 	try {
 		httpPost(commandParams) {resp ->
             if (resp.status == 200) {
-                respData = resp.data.toString()
-                def retobj = [:]
-                retobj.code = 200
-                retobj.token = ""
-                retobj.key = ""
-                logDebug("respData:" + respData)
-                if(respData.indexOf('"token"')>0)
-                {
-                    retobj.token = respData.substring(respData.indexOf('"token"')+9)
-                    retobj.token = retobj.token.substring(0,retobj.token.indexOf('"'))
-                    logDebug("token:" + retobj.token)
+                def retobj = [code: 200, token: "", key: ""]
+                def raw = resp.data?.toString() ?: ""
+
+                // Prefer robust JSON parsing; fall back to string extraction so
+                // an unexpected envelope shape does not break a working login.
+                try {
+                    def parsed = new JsonSlurper().parseText(raw)
+                    def d = parsed?.data ?: parsed
+                    retobj.token = d?.token ?: ""
+                    retobj.key = d?.key ?: ""
+                } catch (parseEx) {
+                    logDebug("login response not JSON-parseable; using fallback extraction")
+                    retobj.token = extractField(raw, "token")
+                    retobj.key = extractField(raw, "key")
                 }
-                if(respData.indexOf('"key"')>0)
-                {
-                    retobj.key = respData.substring(respData.indexOf('"key"')+7)
-                    retobj.key = retobj.key.substring(0,retobj.key.indexOf('"'))
-                    logDebug("key:" + retobj.key)
-                }
-                if(retobj.token.length()==0 || retobj.key.length()==0)
-                {
+
+                if (!retobj.token || !retobj.key) {
                     retobj.code = 9999
                     retobj.error = "Invalid username/password"
                 }
@@ -310,11 +315,24 @@ def loginMeross(email, password, domain) {
 			}
 		}
 	} catch (e) {
-		def msg = "Error = ${e}\n\n"
 		respData = [code: 9999, error: e]
 	}
-    
+
     return respData
+}
+
+// Fallback extractor: pull the first string value of "field" from raw JSON text.
+// Only used if JsonSlurper fails, to preserve resilience against API changes.
+private extractField(String src, String field) {
+    def marker = "\"${field}\""
+    def i = src.indexOf(marker)
+    if (i < 0) return ""
+    def rest = src.substring(i + marker.length())
+    def start = rest.indexOf('"')
+    if (start < 0) return ""
+    rest = rest.substring(start + 1)
+    def end = rest.indexOf('"')
+    return end < 0 ? "" : rest.substring(0, end)
 }
 
 def logDebug(msg) {
