@@ -81,16 +81,7 @@ def sendCommand(int open) {
     try {
         def payloadData = currentVersion >= 200 ? getSign() : [MessageId: settings.messageId, Sign: settings.sign, CurrentTime: settings.timestamp]
 
-        def hubAction = new hubitat.device.HubAction([
-            method: 'POST',
-            path: '/config',
-            headers: [
-                'HOST': settings.deviceIp,
-                'Content-Type': 'application/json',
-            ],
-            body: '{"payload":{"state":{"open":' + open + ',"channel":' + settings.channel + ',"uuid":"' + settings.uuid + '"}},"header":{"messageId":"'+payloadData.get('MessageId')+'","method":"SET","from":"http://'+settings.deviceIp+'/config","sign":"'+payloadData.get('Sign')+'","namespace":"Appliance.GarageDoor.State","triggerSrc":"AndroidLocal","timestamp":' + payloadData.get('CurrentTime') + ',"payloadVersion":1' + ',"uuid":"' + settings.uuid + '"}}'
-        ])
-        sendHubCommand(hubAction)
+        postToDevice('{"payload":{"state":{"open":' + open + ',"channel":' + settings.channel + ',"uuid":"' + settings.uuid + '"}},"header":{"messageId":"'+payloadData.get('MessageId')+'","method":"SET","from":"http://'+settings.deviceIp+'/config","sign":"'+payloadData.get('Sign')+'","namespace":"Appliance.GarageDoor.State","triggerSrc":"AndroidLocal","timestamp":' + payloadData.get('CurrentTime') + ',"payloadVersion":1' + ',"uuid":"' + settings.uuid + '"}}')
         runIn(settings.garageOpenCloseTime.toInteger(), 'refresh')
     } catch (e) {
         log.error("sendCommand hit exception ${e}")
@@ -111,17 +102,7 @@ def refresh() {
 
         log.info('Refreshing')
 
-        def hubAction = new hubitat.device.HubAction([
-            method: 'POST',
-            path: '/config',
-            headers: [
-                'HOST': settings.deviceIp,
-                'Content-Type': 'application/json',
-            ],
-            body: '{"payload":{},"header":{"messageId":"'+payloadData.get('MessageId')+'","method":"GET","from":"http://'+settings.deviceIp+'/subscribe","sign":"'+ payloadData.get('Sign') +'","namespace": "Appliance.System.All","triggerSrc":"AndroidLocal","timestamp":' + payloadData.get('CurrentTime') + ',"payloadVersion":1}}'
-        ])
-        log hubAction
-        sendHubCommand(hubAction)
+        postToDevice('{"payload":{},"header":{"messageId":"'+payloadData.get('MessageId')+'","method":"GET","from":"http://'+settings.deviceIp+'/subscribe","sign":"'+ payloadData.get('Sign') +'","namespace": "Appliance.System.All","triggerSrc":"AndroidLocal","timestamp":' + payloadData.get('CurrentTime') + ',"payloadVersion":1}}')
     } catch (Exception e) {
         log.debug "refresh hit exception ${e}"
     }
@@ -142,15 +123,53 @@ def updated() {
     initialize()
 }
 
+// Send via asynchttpPost rather than a raw LAN HubAction: some MSG100 firmware
+// replies in a form parseLanMessage() delivers with an empty body, so the
+// state response was never seen and the door stuck at opening/closing.
+def postToDevice(String body) {
+    log "POST http://${settings.deviceIp}/config ${body}"
+    asynchttpPost('handleResponse', [
+        uri: "http://${settings.deviceIp}/config",
+        requestContentType: 'application/json',
+        contentType: 'application/json',
+        body: body,
+        timeout: 10
+    ])
+}
+
+def handleResponse(response, data) {
+    if (response.hasError()) {
+        log.error("Request failed: status ${response.status}, ${response.getErrorMessage()}")
+        return
+    }
+    def text = response.data
+    if (!text) {
+        log.error("Empty response from device (status ${response.status})")
+        return
+    }
+    def body
+    try {
+        body = parseJson(text)
+    } catch (e) {
+        log.error("Could not parse device response: ${text}")
+        return
+    }
+    log "Response: ${text}"
+    handleBody(body)
+}
+
+// Responses now arrive via handleResponse(); this only handles stray LAN
+// messages routed to the device.
 def parse(String description) {
     def msg = parseLanMessage(description)
-    def body = parseJson(msg.body)
-
-    if(msg.status != 200) {
-         log.error("Request failed")
-         return
+    if (msg.status != 200 || !msg.body) {
+        log "Ignoring LAN message (status ${msg.status}, empty body: ${!msg.body})"
+        return
     }
+    handleBody(parseJson(msg.body))
+}
 
+def handleBody(body) {
     // Close/Open request was sent
     if(body.header.method == "SETACK") return
 
