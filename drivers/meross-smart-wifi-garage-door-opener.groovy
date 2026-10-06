@@ -48,7 +48,8 @@ metadata {
             input('uuid', 'text', title: 'UUID', description: '', required: true, defaultValue: '')
             input('channel', 'number', title: 'Garage Door Port', description: '', required: true, defaultValue: 1)
             input('garageOpenCloseTime','number',title: 'Garage Open/Close time (in seconds)', description:'Delay before confirming state after a command. Set a couple seconds longer than your door\'s full travel time.', required: true, defaultValue: 15)
-            input('DebugLogging', 'bool', title: 'Enable debug logging', defaultValue: true)
+            input('pollInterval', 'enum', title: 'Polling interval (minutes)', description: 'How often to check door state. Longer intervals reduce hub load but delay noticing doors moved by a wall button or remote.', options: ['1', '5', '10', '15', '30'], required: true, defaultValue: '1')
+            input('DebugLogging', 'bool', title: 'Enable debug logging', description: 'Turns itself off after 30 minutes.', defaultValue: false)
         }
     }
 }
@@ -62,7 +63,13 @@ def initialize() {
     refresh()
 
     unschedule('refresh')
-    runEvery1Minute('refresh')
+    switch (settings.pollInterval ?: '1') {
+        case '5': runEvery5Minutes('refresh'); break
+        case '10': runEvery10Minutes('refresh'); break
+        case '15': runEvery15Minutes('refresh'); break
+        case '30': runEvery30Minutes('refresh'); break
+        default: runEvery1Minute('refresh')
+    }
 }
 
 def sendCommand(int open) {
@@ -120,7 +127,14 @@ def close() {
 
 def updated() {
     log.info('Updated')
+    unschedule('logsOff')
+    if (DebugLogging) runIn(1800, 'logsOff')
     initialize()
+}
+
+def logsOff() {
+    log.info('Debug logging disabled')
+    device.updateSetting('DebugLogging', [value: 'false', type: 'bool'])
 }
 
 // Send via asynchttpPost rather than a raw LAN HubAction: some MSG100 firmware
@@ -154,7 +168,7 @@ def handleResponse(response, data) {
         log.error("Could not parse device response: ${text}")
         return
     }
-    log "Response: ${text}"
+    log "Response: ${body.header?.method} ${body.header?.namespace}"
     handleBody(body)
 }
 
@@ -184,12 +198,20 @@ def handleBody(body) {
             log.error("No garage door found for channel ${channel}")
             return
         }
-        sendEvent(name: 'door', value: door.open ? 'open' : 'closed')
-        sendEvent(name: 'contact', value: door.open ? 'open' : 'closed')
-        sendEvent(name: 'version', value: body.payload.all.system.firmware.version, isStateChange: false)
-        sendEvent(name: 'model', value: body.payload.all.system.hardware.type, isStateChange: false)
+        def doorState = door.open ? 'open' : 'closed'
+        // Polling runs often; only send events for values that changed to keep hub load down.
+        sendEventIfChanged('door', doorState)
+        sendEventIfChanged('contact', doorState)
+        sendEventIfChanged('version', body.payload.all.system.firmware.version)
+        sendEventIfChanged('model', body.payload.all.system.hardware.type)
     } else {
         log.error ("Request failed")
+    }
+}
+
+def sendEventIfChanged(String name, value) {
+    if (device.currentValue(name)?.toString() != value?.toString()) {
+        sendEvent(name: name, value: value)
     }
 }
 
